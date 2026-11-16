@@ -139,6 +139,13 @@ class OpenLauncher(tk.Tk):
         self.launcher_state = "check"
         self.launcher_label = tk.StringVar()
         ttk.Label(lr, textvariable=self.launcher_label).pack(side="left", padx=8)
+        # v3 preview: a GitHub pre-release (release installs) or the testing branch (git clones)
+        pr = ttk.Frame(u)
+        pr.pack(fill="x", pady=1)
+        self.btn_preview = ttk.Button(pr, text="Try OpenLauncher v3", width=26, command=self.try_preview)
+        self.btn_preview.pack(side="left")
+        ttk.Label(pr, text="Preview: new design with launch options. You can come back to this version any time "
+                           "(in v3: Updates > Back to stable).", foreground="#666").pack(side="left", padx=8)
         self.set_launcher_state("check")
 
         lf = ttk.Frame(self, padding=(8, 4, 8, 8))
@@ -264,6 +271,7 @@ class OpenLauncher(tk.Tk):
                                           "blocked": "Launcher updates off"}[state])
         self.btn_launcher.state(["disabled"] if state in ("busy", "blocked") else ["!disabled"])
         self.btn_force.state(["disabled"] if state in ("busy", "blocked") else ["!disabled"])
+        self.btn_preview.state(["disabled"] if state in ("busy", "blocked") else ["!disabled"])
         if updater.is_git_clone():
             g = git or {}
             text = "Installed launcher: git clone" + (f", {g['branch']} @ {g['head']}" if g else "")
@@ -320,14 +328,15 @@ class OpenLauncher(tk.Tk):
             return False
         return True
 
-    def _git_update(self, force):
-        """Pull (or force-move) the clone in the background, then restart OpenLauncher on the new code."""
+    def _git_update(self, force, target=None):
+        """Pull (or force-move, or switch to target) the clone in the background, then restart OpenLauncher on the
+        new code."""
         self.busy = True
         self.set_launcher_state("busy")
 
         def work():
             try:
-                if updater.git_update(force, self.q.put):
+                if updater.git_update(force, self.q.put, target=target):
                     self.q.put("Restarting OpenLauncher on the updated code...")
                     self.q.put(self.restart)
                     return
@@ -362,23 +371,63 @@ class OpenLauncher(tk.Tk):
         if updater.is_git_clone():
             self._git_update(force=False)
             return
+        self._install_release("Update launcher", "the latest release", "Update now?")
+
+    def _install_release(self, title, what, question, version=None, extra=""):
+        """Confirm, back up edited shared files, then run setup for this folder (latest release, or version)."""
         changed = updater.local_changes()
         note = (f"\n\nYou changed or added {len(changed)} file(s) in names/definitions/data (e.g. {changed[0]}); "
                 "setup replaces those folders, so they are backed up to workspace\\backups first." if changed else "")
         if not messagebox.askyesno(
-                "Update launcher", f"OpenLauncher closes and the latest release is installed into\n{ROOT}\n"
-                                   "Your workspace and settings are kept. OpenLauncher starts again when it's done."
-                                   + note + "\n\nUpdate now?"):
+                title, f"OpenLauncher closes and {what} is installed into\n{ROOT}\n"
+                       "Your workspace and settings are kept. OpenLauncher starts again when it's done."
+                       + extra + note + "\n\n" + question):
             return
         try:
             if changed:
                 bdir = updater.backup_local_changes(changed, "launcher-update")
                 self.write(f"Backed up {len(changed)} edited file(s) to {bdir}")
-            updater.launcher_update(self.cfg, self.write)
+            updater.launcher_update(self.cfg, self.write, version=version)
         except (updater.UpdateError, OSError) as e:
-            messagebox.showerror("Update launcher", str(e))
+            messagebox.showerror(title, str(e))
             return
         self.after(300, self.destroy)
+
+    def try_preview(self):
+        """Updates > Try OpenLauncher v3: the newest v3 pre-release, or the testing branch in a git clone."""
+        title = "Try OpenLauncher v3"
+        why = updater.launcher_blocker(self.cfg)
+        if why:
+            messagebox.showinfo(title, f"This install can't switch launchers from here: {why}.")
+            return
+        if not self._launcher_update_allowed(title):
+            return
+        back = ("\n\nv3 is a preview. To come back to this version: Updates > Back to stable in v3")
+        if updater.is_git_clone():
+            if messagebox.askyesno(
+                    title, f"This switches the git clone in\n{ROOT}\nto the {updater.PREVIEW_BRANCH} branch (v3 preview) "
+                           "and restarts OpenLauncher. Uncommitted changes are saved to a git stash and local commits "
+                           "to a backup branch first. Your workspace and config.json are not touched."
+                           + back + f" (switches back to {updater.GIT_BRANCH}).\n\nSwitch now?"):
+                self._git_update(force=True, target=updater.PREVIEW_BRANCH)
+            return
+        self.set_launcher_state("busy")
+
+        def work():
+            try:
+                ver = updater.preview_latest()
+            except updater.UpdateError as e:
+                self.q.put(f"Looking for the v3 preview: {e}")
+                self.q.put(lambda: self.set_launcher_state("check"))
+                return
+            self.q.put(lambda: self.set_launcher_state("check"))
+            if not ver:
+                self.q.put(lambda: messagebox.showinfo(title, "There's no v3 preview to try yet. Check again later."))
+                return
+            self.q.put(lambda: self._install_release(
+                title, f"the OpenLauncher v{ver} preview", "Install the preview now?", version=ver,
+                extra=back + " (installs the latest stable release)."))
+        threading.Thread(target=work, daemon=True).start()
 
     # ---------------------------------------------------------------- actions
     def write(self, line):
