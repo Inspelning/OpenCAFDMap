@@ -85,7 +85,12 @@ class OpenLauncher(tk.Tk):
             w.grid(row=r, column=1, sticky="we")
             if kind in ("dir", "file"):
                 ttk.Button(pf, text="Browse", width=8, command=lambda k=key, t=kind: self.browse(k, t)).grid(row=r, column=2, padx=4)
-            ttk.Label(pf, text=hlp, foreground="#666").grid(row=r, column=3, sticky="w")
+            hl = ttk.Label(pf, text=hlp, foreground="#666")
+            hl.grid(row=r, column=3, sticky="w")
+            if key == "ista_db":              # live: decrypted (usable) or encrypted / not a DiagDocDb
+                self.ista_status = hl
+                v.trace_add("write", lambda *_: self._ista_status())
+                self._ista_status()
         self.all_versions = tk.BooleanVar(value=bool(self.cfg.get("export_all_versions")))
         ttk.Checkbutton(pf, text="Export every CAFD version (bigger; otherwise newest 3 + the versions in your "
                                   "BimmerCode backups)", variable=self.all_versions).grid(row=len(FIELDS), column=1,
@@ -170,6 +175,10 @@ class OpenLauncher(tk.Tk):
         lf.columnconfigure(0, weight=1)
 
     # ---------------------------------------------------------------- settings
+    def _ista_status(self):
+        level, text = config.ista_db_status(self.vars["ista_db"].get())
+        self.ista_status.configure(text=text, foreground={"ok": "#1a7f37", "bad": "#b42318"}.get(level, "#666"))
+
     def browse(self, key, kind):
         cur = self.vars[key].get()
         if kind == "dir":
@@ -472,12 +481,21 @@ class OpenLauncher(tk.Tk):
             pass
         self.after(100, self._drain)
 
+    def _build_question(self):
+        _, titles = config.ista_db_status(self.cfg.get("ista_db"))
+        return ("E-Sys doesn't need this: OpenLauncher names each CAFD the first time you open it in E-Sys.\n\n"
+                "Build definitions is only needed for the BimmerCode Backup Editor and the command-line tools. The "
+                "first build reads every CAFD in your psdzdata and can take half an hour or more.\n\n"
+                f"Option titles: {titles}.\n\nBuild now?")
+
     def run_step(self, step):
         if self.busy:
             return
         self.save(quiet=True)
         if step == "build" and not esys_ready(self.cfg):
             messagebox.showerror("E-Sys", "Set the E-Sys folder first (it is used to decrypt your psdzdata).")
+            return
+        if step == "build" and not messagebox.askyesno("Build definitions", self._build_question(), icon="question"):
             return
         self.busy = True
         for w in self.btns + [self.btn_esys]:
