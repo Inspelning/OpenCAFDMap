@@ -21,6 +21,7 @@ DEFAULTS = {
     "context": "G20_LCI_US_330ixDrive_89FF.xml",  # data\contexts\ reference vehicle for shorter labels; "none"
     "try_untested_esys": False,    # True: Cheat Sheet Apply also on E-Sys versions OpenLauncher wasn't tested with
     "esys_ui_scale": "",           # "" = E-Sys's own UI.Scale; "1", "1.25", ...: passed as -Dsun.java2d.uiScale
+    "esys_language": "",           # "" = E-Sys's own language=; "en" / "de": E-Sys's language for that start
     "export_all_versions": False,  # False: newest 3 versions per CAFD + versions found in your BimmerCode backups
     "cheat_sheets_dir": "",      # optional: folder of FDL cheat-sheet XMLs to import (kept local, never committed)
     "ista_db": "",               # optional: decrypted ISTA DiagDocDb sqlite (SA option titles in labels)
