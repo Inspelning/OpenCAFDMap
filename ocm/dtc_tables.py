@@ -2,7 +2,11 @@
 r"""Build the DTC tool's shipped fault texts (data\dtc\) on the maintainer's machine. Users never run this:
 OpenLauncher only needs E-Sys and these tables.
 
-    python ocm\dtc_tables.py --ista <DiagDocDb.sqlite> --key <encryption_key>
+    python ocm\dtc_tables.py --ista <decrypted DiagDocDb.sqlite>
+    python ocm\dtc_tables.py --ista <DiagDocDb.sqlite as ISTA ships it> --key <key>   (needs: pip install apsw-sqlite3mc)
+
+The key can also come from the environment variable OCM_ISTA_KEY (keeps it out of the shell history). It isn't
+shipped. The ISTA database stays optional for Open CAFD Map: only this maintainer script reads it.
 
 Writes (deterministic gzip, so an unchanged rebuild gives identical files):
   data\dtc\faults.tsv.gz   diagnostic address (hex), fault code (hex, as the ECU reports it), then up to 3 texts
@@ -14,12 +18,12 @@ Writes (deterministic gzip, so an unchanged rebuild gives identical files):
                            title at that address), shown when E-Sys has no SVT with the module's name
   data\dtc\SOURCES.txt     the ISTA version the tables were built from
 """
-import apsw
 import argparse
 import collections
 import gzip
 import io
 import os
+import sqlite3
 import sys
 import urllib.parse
 
@@ -34,13 +38,22 @@ def clean(s):
     return " ".join((s or "").replace("|", "/").split())
 
 
-def build(ista, key):
-    params = urllib.parse.urlencode({
-        "cipher": "rc4",
-        "key": key
-    })
-    con = apsw.Connection(f"file:{ista}?{params}", 
-                          flags = apsw.SQLITE_OPEN_URI | apsw.SQLITE_OPEN_READONLY)
+def open_db(ista, key=None):
+    """(connection, error classes): plain sqlite3 for a decrypted database, apsw (SQLite3 Multiple Ciphers) with the
+    RC4 cipher for the encrypted one ISTA ships. apsw is only imported when a key is given."""
+    if not key:
+        return sqlite3.connect(f"file:{ista}?mode=ro", uri=True), (sqlite3.Error,)
+    try:
+        import apsw
+    except ImportError:
+        sys.exit("--key needs SQLite3 Multiple Ciphers for Python: pip install apsw-sqlite3mc")
+    params = urllib.parse.urlencode({"cipher": "rc4", "key": key})
+    con = apsw.Connection(f"file:{ista}?{params}", flags=apsw.SQLITE_OPEN_URI | apsw.SQLITE_OPEN_READONLY)
+    return con, (apsw.Error,)
+
+
+def build(ista, key=None):
+    con, db_errors = open_db(ista, key)
     q = ("SELECT g.DIAGNOSTIC_ADDRESS, f.CODE, l.TITLE_ENGB, l.TITLE_DEDE "
          "FROM XEP_FAULTCODES f JOIN XEP_ECUVARIANTS v ON v.ID = f.ECUVARIANTID "
          "JOIN XEP_ECUGROUPS g ON g.ID = v.ECUGROUPID "
@@ -66,7 +79,7 @@ def build(ista, key):
     try:
         ver = con.execute("SELECT VERSION FROM RG_VERSION WHERE SUBSYSTEM = 'DATABASE'").fetchone()
         ver = ver[0] if ver else None
-    except apsw.Error:
+    except db_errors:
         ver = None
     con.close()
     rows = []
@@ -86,8 +99,9 @@ def write_gz(path, text):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--ista", required=True, help="ISTA DiagDocDb.sqlite (maintainer only)")
-    ap.add_argument("--key", required=True, help="Encryption key (maintainer only)")
+    ap.add_argument("--ista", required=True, help="ISTA DiagDocDb.sqlite, decrypted or with --key (maintainer only)")
+    ap.add_argument("--key", default=os.environ.get("OCM_ISTA_KEY"),
+                    help="key of the encrypted DiagDocDb as ISTA ships it (default: OCM_ISTA_KEY); omit for a decrypted one")
     a = ap.parse_args()
     rows, modules, ver = build(a.ista, a.key)
     os.makedirs(OUT, exist_ok=True)
