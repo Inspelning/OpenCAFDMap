@@ -17,6 +17,9 @@ Writes (deterministic gzip, so an unchanged rebuild gives identical files):
   data\dtc\modules.tsv.gz  diagnostic address (hex) -> module title "English|German" (the most common ECU variant
                            title at that address), shown when E-Sys has no SVT with the module's name
   data\dtc\SOURCES.txt     the ISTA version the tables were built from
+
+Codes and module titles already in the tables that this ISTA version lacks are kept (newer ISTA versions drop some
+that cars still report); --no-keep rebuilds from this ISTA alone.
 """
 import argparse
 import collections
@@ -89,6 +92,22 @@ def build(ista, key=None):
     return rows, modules, ver
 
 
+def read_gz_rows(path):
+    """Data rows (no header) of one of our .tsv.gz tables, [] if there is none yet."""
+    if not os.path.isfile(path):
+        return []
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        return [line.rstrip("\n") for line in f.readlines()[1:] if line.strip()]
+
+
+def keep_dropped(rows, old_rows, key_len):
+    """rows plus every old row whose key (the first key_len characters: "AA\tCCCCCC" or "AA") the new build lacks,
+    sorted by key. A newer ISTA drops some codes that cars still report, so a rebuild never loses a text."""
+    have = {r[:key_len] for r in rows}
+    kept = [r for r in old_rows if r[:key_len] not in have]
+    return sorted(rows + kept, key=lambda r: r[:key_len]), len(kept)
+
+
 def write_gz(path, text):
     raw = io.BytesIO()
     with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0, compresslevel=9) as g:
@@ -102,16 +121,25 @@ def main():
     ap.add_argument("--ista", required=True, help="ISTA DiagDocDb.sqlite, decrypted or with --key (maintainer only)")
     ap.add_argument("--key", default=os.environ.get("OCM_ISTA_KEY"),
                     help="key of the encrypted DiagDocDb as ISTA ships it (default: OCM_ISTA_KEY); omit for a decrypted one")
+    ap.add_argument("--out", default=OUT, help=f"output folder (default: {OUT})")
+    ap.add_argument("--no-keep", action="store_true",
+                    help="don't keep codes and module titles of the existing tables that this ISTA lacks")
     a = ap.parse_args()
     rows, modules, ver = build(a.ista, a.key)
-    os.makedirs(OUT, exist_ok=True)
-    write_gz(os.path.join(OUT, "faults.tsv.gz"), "addr\tcode\ttexts (English|German, most common first)\n" +
-             "\n".join(rows) + "\n")
-    write_gz(os.path.join(OUT, "modules.tsv.gz"), "addr\ttitle (English|German)\n" + "\n".join(modules) + "\n")
-    with open(os.path.join(OUT, "SOURCES.txt"), "w", encoding="utf-8", newline="\n") as f:
+    fp, mp = os.path.join(a.out, "faults.tsv.gz"), os.path.join(a.out, "modules.tsv.gz")
+    kept_f = kept_m = 0
+    if not a.no_keep:
+        rows, kept_f = keep_dropped(rows, read_gz_rows(fp), 9)
+        modules, kept_m = keep_dropped(modules, read_gz_rows(mp), 2)
+    os.makedirs(a.out, exist_ok=True)
+    write_gz(fp, "addr\tcode\ttexts (English|German, most common first)\n" + "\n".join(rows) + "\n")
+    write_gz(mp, "addr\ttitle (English|German)\n" + "\n".join(modules) + "\n")
+    with open(os.path.join(a.out, "SOURCES.txt"), "w", encoding="utf-8", newline="\n") as f:
         f.write("DTC fault texts (built by ocm/dtc_tables.py)\n")
         f.write(f"ISTA database {ver or '?'}\n")
-    print(f"{len(rows)} address + code pairs, {len(modules)} module titles -> {OUT}")
+        if kept_f or kept_m:
+            f.write(f"plus {kept_f} fault codes and {kept_m} module titles kept from the previous tables (other ISTA versions)\n")
+    print(f"{len(rows)} address + code pairs ({kept_f} kept), {len(modules)} module titles ({kept_m} kept) -> {a.out}")
 
 
 if __name__ == "__main__":
